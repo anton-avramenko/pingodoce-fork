@@ -26,7 +26,7 @@ function newCoupon(): Coupon {
     title: 'Cupão de 15€ Combustível BP',
     discount: '15€',
     barcode: '',
-    format: 'CODE128',
+    format: 'EAN13',
     startsAt: new Date().toISOString().slice(0, 10),
     expiresAt: new Date().toISOString().slice(0, 10),
     conditions: '',
@@ -109,7 +109,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
               inputMode="numeric"
               value={draft.cardNumber}
               onChange={(e) => patch({ cardNumber: e.target.value.trim() })}
-              placeholder="Ex.: 2400000000000"
+              placeholder="Ex.: 2400000000006"
             />
           </div>
 
@@ -121,7 +121,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
               inputMode="numeric"
               value={draft.poupaMaisNumber}
               onChange={(e) => patch({ poupaMaisNumber: e.target.value.trim() })}
-              placeholder="Ex.: 2410000000000"
+              placeholder="Ex.: 2410000000005"
             />
           </div>
 

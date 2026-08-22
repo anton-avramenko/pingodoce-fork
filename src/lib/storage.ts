@@ -10,17 +10,18 @@ export function defaultConfig(): AppConfig {
   return {
     // Demo placeholders only — never real card numbers (this repo is public).
     // Configure real values in-app via the "Listas" → gear setup screen.
-    cardNumber: '2400000000000',
-    poupaMaisNumber: '2410000000000',
-    cardFormat: 'CODE128',
+    // Numbers are valid EAN-13 (the symbology Pingo Doce / BP codes use).
+    cardNumber: '2400000000006',
+    poupaMaisNumber: '2410000000005',
+    cardFormat: 'EAN13',
     userName: 'Cliente Demo',
     coupons: [
       {
         id: 'demo-fuel',
         title: 'Cupão de 15€ Combustível BP',
         discount: '15€',
-        barcode: '9990000000001',
-        format: 'CODE128',
+        barcode: '9990000000005',
+        format: 'EAN13',
         startsAt: todayIso(),
         expiresAt: inDaysIso(5),
         conditions:
@@ -31,8 +32,8 @@ export function defaultConfig(): AppConfig {
         id: 'demo-store',
         title: 'Cupão de 15€ em Saldo na 1.ª compra',
         discount: '15€',
-        barcode: '9990000000002',
-        format: 'CODE128',
+        barcode: '9990000000012',
+        format: 'EAN13',
         startsAt: todayIso(),
         expiresAt: inDaysIso(5),
         conditions:

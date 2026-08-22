@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import JsBarcode from 'jsbarcode';
 import type { BarcodeFormat } from '@/lib/types';
+import { effectiveFormat } from '@/lib/barcode';
 
 interface BarcodeProps {
   value: string;
@@ -42,10 +43,12 @@ export default function Barcode({
     }
     try {
       JsBarcode(svgRef.current, value, {
-        format,
+        format: effectiveFormat(value, format),
         height,
         width: barWidth,
         displayValue,
+        // Uniform-height bars (no EAN guard-bar extensions), matching the app
+        flat: true,
         margin: 0,
         background: 'transparent',
         lineColor: '#1B1B1A',

@@ -37,8 +37,8 @@ export interface AppConfig {
 }
 
 export const BARCODE_FORMATS: BarcodeFormat[] = [
-  'CODE128',
   'EAN13',
+  'CODE128',
   'CODE39',
   'ITF',
 ];
