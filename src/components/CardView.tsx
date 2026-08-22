@@ -76,7 +76,9 @@ export default function CardView({ config, onClose }: CardViewProps) {
               </div>
 
               <div className="relative mt-5 rounded-xl bg-white px-4 py-4">
-                <Barcode value={config.cardNumber} format={config.cardFormat} height={92} barWidth={2} />
+                {/* The card barcode encodes the Poupa Mais number (this is the
+                    code the app presents for scanning), not the O Meu number. */}
+                <Barcode value={config.poupaMaisNumber} format={config.cardFormat} height={92} barWidth={2} />
               </div>
             </div>
 
