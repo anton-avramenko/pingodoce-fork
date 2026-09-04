@@ -29,12 +29,20 @@ scannable barcodes.
 - **PWA:** web app manifest with `display: standalone` (hides the browser
   address bar when added to the home screen) plus a minimal service worker
   for instant/offline shell loading.
+- **AI code scanning:** photograph or upload an image of a physical card, a
+  coupon, a till receipt or plain text and let Claude read the code out of it.
+  Available from *Cupões → Digitalizar* (creates a coupon) and from the camera
+  buttons next to every code field in the setup screen (fills the field).
+  Recognised codes are shown with a confidence badge and a barcode preview
+  before you confirm; 13-digit codes with a valid checksum are saved as
+  EAN-13, anything else as CODE128.
 
 ## Stack
 
 - [Next.js 14](https://nextjs.org/) (App Router, `output: 'export'` — fully static)
 - [Tailwind CSS 3](https://tailwindcss.com/)
 - [JsBarcode](https://github.com/lindell/JsBarcode) (SVG rendering; CODE128, EAN-13, CODE39, ITF)
+- [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) (Claude vision + structured outputs for code scanning)
 - TypeScript
 
 ## Project structure
@@ -62,9 +70,11 @@ scannable barcodes.
 │   │   ├── MoreView.tsx        # more tab (menu + setup entry)
 │   │   ├── Barcode.tsx         # JsBarcode SVG wrapper
 │   │   ├── RegisterSW.tsx      # service worker registration
+│   │   ├── scan/CodeScanner.tsx # photo/upload bottom sheet → AI code extraction
 │   │   └── icons.tsx           # original inline SVG icon set
 │   └── lib/
 │       ├── types.ts            # AppConfig / Coupon models
+│       ├── scan.ts             # Claude API call: image → code candidates
 │       └── storage.ts          # localStorage load/save/seed + React hook
 ├── next.config.mjs             # static export config (+ optional basePath)
 ├── tailwind.config.ts          # brand tokens (green / white / gray / red)
@@ -104,6 +114,32 @@ Serve over **HTTPS** — service workers and home-screen install require it.
    and coupon barcodes, then **Guardar**.
 3. In store: show the coupon detail (Cupões → coupon), then tap **Cartão**
    in the bottom bar — the card barcode is ready to scan instantly.
+
+## AI code scanning
+
+Recognition runs on the Claude API (`claude-opus-5`, vision + structured JSON
+output) directly from the browser — the site is fully static, so there is no
+backend to hold a secret. The API key therefore lives on the device:
+
+1. Create a key at <https://platform.claude.com/>. Use a **dedicated key with
+   a spend limit** for UAT and revoke it afterwards.
+2. Open the setup screen (*Listas → Configuração (POC)* or `/setup`), paste it
+   under **Reconhecimento por IA → Chave API Anthropic** and **Guardar**. The
+   key is stored in `localStorage` on that device only and is sent to
+   `api.anthropic.com` over HTTPS and nowhere else.
+3. Use *Cupões → Digitalizar* or a camera button in setup: **Tirar foto** opens
+   the rear camera, **Carregar imagem** opens the gallery/file picker. Images
+   are downscaled to ≤1568 px JPEG in the browser before upload.
+
+There is deliberately no `NEXT_PUBLIC_*` key fallback: anything inlined at
+build time would ship to every visitor of the public site. For a production
+build, move the call behind a small proxy (serverless function / worker) that
+holds the key and forwards the image.
+
+What the model returns: every code it can read (digits under a barcode,
+voucher numbers, alphanumeric promo codes) with a confidence level, plus the
+coupon title, discount and expiry date when they are printed. Unreadable digits
+are never guessed; the candidate is flagged *Leitura incerta* instead.
 
 ## Barcode notes
 

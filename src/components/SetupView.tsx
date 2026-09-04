@@ -3,8 +3,10 @@
 import { useEffect, useState } from 'react';
 import type { AppConfig, BarcodeFormat, Coupon, CouponKind } from '@/lib/types';
 import { BARCODE_FORMATS } from '@/lib/types';
+import { resolveApiKey } from '@/lib/scan';
 import Barcode from './Barcode';
-import { CloseIcon, PlusIcon, TrashIcon } from './icons';
+import { CameraIcon, CloseIcon, PlusIcon, SparkleIcon, TrashIcon } from './icons';
+import CodeScanner, { type PickedCode } from './scan/CodeScanner';
 
 interface SetupViewProps {
   config: AppConfig;
@@ -16,6 +18,11 @@ interface SetupViewProps {
 const inputClass =
   'w-full rounded-xl border border-surface-line bg-white px-3 py-2.5 text-sm text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand/25';
 const labelClass = 'mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-soft';
+
+/** Which field a scan result should be written into. */
+type ScanTarget =
+  | { field: 'cardNumber' | 'poupaMaisNumber' }
+  | { field: 'coupon'; id: string };
 
 function newCoupon(): Coupon {
   return {
@@ -44,6 +51,8 @@ function newCoupon(): Coupon {
 export default function SetupView({ config, onSave, onReset, onClose }: SetupViewProps) {
   const [draft, setDraft] = useState<AppConfig>(config);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [scanTarget, setScanTarget] = useState<ScanTarget | null>(null);
+  const apiKey = resolveApiKey(draft.aiApiKey);
 
   // Re-sync the draft if the persisted config changes (e.g. after a reset)
   useEffect(() => {
@@ -66,6 +75,40 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
     setSavedFlash(true);
     window.setTimeout(() => setSavedFlash(false), 1600);
   };
+
+  /** Write the code the user picked in the scanner into the targeted field. */
+  const applyScan = ({ candidate, result }: PickedCode) => {
+    if (!scanTarget) return;
+    if (scanTarget.field === 'coupon') {
+      patchCoupon(scanTarget.id, {
+        barcode: candidate.code,
+        format: candidate.format,
+        // Fill in metadata the model could read off the coupon; the fields
+        // stay editable right below, so a wrong guess is a one-tap fix.
+        ...(result.title ? { title: result.title } : {}),
+        ...(result.discount ? { discount: result.discount } : {}),
+        ...(result.expiresAt ? { expiresAt: result.expiresAt } : {}),
+        ...(result.couponKind ? { kind: result.couponKind } : {}),
+      });
+    } else {
+      patch({ [scanTarget.field]: candidate.code });
+      if (scanTarget.field === 'poupaMaisNumber') patch({ cardFormat: candidate.format });
+    }
+    setScanTarget(null);
+  };
+
+  /** Small camera button rendered inside a code input. */
+  const scanButton = (target: ScanTarget, label: string) => (
+    <button
+      type="button"
+      onClick={() => setScanTarget(target)}
+      aria-label={label}
+      title={label}
+      className="absolute right-1.5 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-lg bg-brand-tint text-brand-dark active:bg-brand-tintDark"
+    >
+      <CameraIcon className="h-5 w-5" />
+    </button>
+  );
 
   return (
     <div className="fixed inset-0 z-[60] overflow-y-auto bg-surface-muted">
@@ -103,26 +146,32 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
 
           <div className="mt-3">
             <label className={labelClass} htmlFor="setup-cardnumber">N.º O Meu Pingo Doce</label>
-            <input
-              id="setup-cardnumber"
-              className={inputClass}
-              inputMode="numeric"
-              value={draft.cardNumber}
-              onChange={(e) => patch({ cardNumber: e.target.value.trim() })}
-              placeholder="Ex.: 2400000000006"
-            />
+            <div className="relative">
+              <input
+                id="setup-cardnumber"
+                className={`${inputClass} pr-11`}
+                inputMode="numeric"
+                value={draft.cardNumber}
+                onChange={(e) => patch({ cardNumber: e.target.value.trim() })}
+                placeholder="Ex.: 2400000000006"
+              />
+              {scanButton({ field: 'cardNumber' }, 'Digitalizar n.º O Meu Pingo Doce')}
+            </div>
           </div>
 
           <div className="mt-3">
             <label className={labelClass} htmlFor="setup-poupamais">N.º Cartão Poupa Mais</label>
-            <input
-              id="setup-poupamais"
-              className={inputClass}
-              inputMode="numeric"
-              value={draft.poupaMaisNumber}
-              onChange={(e) => patch({ poupaMaisNumber: e.target.value.trim() })}
-              placeholder="Ex.: 2410000000005"
-            />
+            <div className="relative">
+              <input
+                id="setup-poupamais"
+                className={`${inputClass} pr-11`}
+                inputMode="numeric"
+                value={draft.poupaMaisNumber}
+                onChange={(e) => patch({ poupaMaisNumber: e.target.value.trim() })}
+                placeholder="Ex.: 2410000000005"
+              />
+              {scanButton({ field: 'poupaMaisNumber' }, 'Digitalizar n.º Poupa Mais')}
+            </div>
           </div>
 
           <div className="mt-3">
@@ -225,13 +274,16 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
 
                   <div>
                     <label className={labelClass}>Código de barras</label>
-                    <input
-                      className={inputClass}
-                      inputMode="numeric"
-                      value={coupon.barcode}
-                      onChange={(e) => patchCoupon(coupon.id, { barcode: e.target.value.trim() })}
-                      placeholder="Número do cupão"
-                    />
+                    <div className="relative">
+                      <input
+                        className={`${inputClass} pr-11`}
+                        inputMode="numeric"
+                        value={coupon.barcode}
+                        onChange={(e) => patchCoupon(coupon.id, { barcode: e.target.value.trim() })}
+                        placeholder="Número do cupão"
+                      />
+                      {scanButton({ field: 'coupon', id: coupon.id }, `Digitalizar cupão ${index + 1}`)}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -281,6 +333,37 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
           </div>
         </section>
 
+        {/* AI recognition */}
+        <section className="rounded-2xl bg-white p-4 shadow-card">
+          <div className="flex items-center gap-2">
+            <SparkleIcon className="h-5 w-5 text-brand-dark" />
+            <h2 className="text-sm font-bold text-ink">Reconhecimento por IA</h2>
+          </div>
+          <p className="mt-1 text-[13px] text-ink-soft">
+            Os botões de câmara ao lado dos códigos fotografam ou carregam uma imagem
+            (cartão, cupão, talão ou texto) e extraem o número com a API da Anthropic.
+          </p>
+
+          <div className="mt-3">
+            <label className={labelClass} htmlFor="setup-aikey">Chave API Anthropic</label>
+            <input
+              id="setup-aikey"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              className={inputClass}
+              value={draft.aiApiKey}
+              onChange={(e) => patch({ aiApiKey: e.target.value.trim() })}
+              placeholder="sk-ant-…"
+            />
+            <p className="mt-1.5 text-[11px] text-ink-faint">
+              Guardada apenas neste dispositivo (localStorage). Não partilhe a chave nem a
+              coloque em repositórios públicos. Use uma chave dedicada com limite de gastos e
+              revogue-a no fim dos testes.
+            </p>
+          </div>
+        </section>
+
         <button
           type="button"
           onClick={onReset}
@@ -289,6 +372,15 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
           Repor dados de demonstração
         </button>
       </div>
+
+      {scanTarget && (
+        <CodeScanner
+          purpose={scanTarget.field === 'coupon' ? 'coupon' : 'card'}
+          apiKey={apiKey}
+          onPick={applyScan}
+          onClose={() => setScanTarget(null)}
+        />
+      )}
 
       {/* Sticky save bar */}
       <div

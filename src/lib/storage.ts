@@ -15,6 +15,7 @@ export function defaultConfig(): AppConfig {
     poupaMaisNumber: '2410000000005',
     cardFormat: 'EAN13',
     userName: 'Cliente Demo',
+    aiApiKey: '',
     coupons: [
       {
         id: 'demo-fuel',

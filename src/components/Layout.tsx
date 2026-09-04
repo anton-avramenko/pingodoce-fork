@@ -66,7 +66,13 @@ export default function Layout({ startInSetup = false, initialTab = 'home' }: La
 
   const views: Record<Tab, React.ReactNode> = {
     home: <HomeView config={config} onNavigate={setTab} onOpenCard={() => setCardOpen(true)} />,
-    coupons: <CouponsView config={config} />,
+    coupons: (
+      <CouponsView
+        config={config}
+        onAddCoupon={(coupon) => update({ ...config, coupons: [...config.coupons, coupon] })}
+        onOpenSetup={() => setSetupOpen(true)}
+      />
+    ),
     promos: <Placeholder title="Promoções" subtitle="As promoções da semana aparecem aqui." />,
     lists: <ListsView onOpenSetup={() => setSetupOpen(true)} />,
     meals: <Placeholder title="Refeições" subtitle="Sugestões e receitas aparecem aqui." />,
