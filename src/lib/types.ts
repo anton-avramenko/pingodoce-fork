@@ -34,6 +34,11 @@ export interface AppConfig {
   /** User identifier placeholder (first name) shown across the app. */
   userName: string;
   coupons: Coupon[];
+  /**
+   * Anthropic API key used for AI photo recognition of codes. Stored only on
+   * this device (localStorage) — the site is static and has no backend.
+   */
+  aiApiKey: string;
 }
 
 export const BARCODE_FORMATS: BarcodeFormat[] = [

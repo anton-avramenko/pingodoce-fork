@@ -240,3 +240,31 @@ export function BrandMark({ className }: IconProps) {
     </svg>
   );
 }
+
+export function CameraIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.3l1.3-2h5.8l1.3 2h2.3A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5v-9Z" />
+      <circle cx="12" cy="12.8" r="3.3" />
+    </svg>
+  );
+}
+
+export function ImageIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <rect x="3.5" y="5" width="17" height="14" rx="2" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m20 15.5-4.3-4.3a1 1 0 0 0-1.4 0L8 17.5" />
+    </svg>
+  );
+}
+
+export function SparkleIcon({ className }: IconProps) {
+  return (
+    <svg {...base(className)}>
+      <path d="M12 3.5 13.6 9l5.4 1.6-5.4 1.6L12 17.5l-1.6-5.3L5 10.6 10.4 9 12 3.5Z" />
+      <path d="M19 16.5v3M17.5 18h3" strokeWidth={1.5} />
+    </svg>
+  );
+}
