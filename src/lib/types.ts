@@ -34,12 +34,21 @@ export interface AppConfig {
   /** User identifier placeholder (first name) shown across the app. */
   userName: string;
   coupons: Coupon[];
+  /** Which AI provider performs photo recognition of codes. */
+  aiProvider: AiProvider;
   /**
-   * Anthropic API key used for AI photo recognition of codes. Stored only on
-   * this device (localStorage) — the site is static and has no backend.
+   * Anthropic API key for AI photo recognition. Stored only on this device
+   * (localStorage) — the site is static and has no backend.
    */
   aiApiKey: string;
+  /** Google AI Studio (Gemini) API key — same storage caveats as above. */
+  googleApiKey: string;
+  /** Gemini model name, e.g. "gemini-2.5-flash". Empty = app default. */
+  googleModel: string;
 }
+
+/** AI providers supported for photo recognition. */
+export type AiProvider = 'anthropic' | 'google';
 
 export const BARCODE_FORMATS: BarcodeFormat[] = [
   'EAN13',

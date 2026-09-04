@@ -2,24 +2,57 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { isValidEan13 } from './barcode';
-import type { BarcodeFormat, CouponKind } from './types';
+import type { AiProvider, AppConfig, BarcodeFormat, CouponKind } from './types';
 
 /**
  * AI-powered code extraction.
  *
- * The POC is a fully static site (no backend), so recognition calls the Claude
- * API directly from the browser with a key the tester enters on the device.
- * `dangerouslyAllowBrowser` is deliberate for that reason — the key never
- * leaves the phone except to reach Anthropic, and it is never bundled.
+ * The POC is a fully static site (no backend), so recognition calls the
+ * provider API directly from the browser with a key the tester enters on the
+ * device. The key is stored only on the phone and never bundled.
+ *
+ * Two providers are supported and share the same prompt, output schema and
+ * post-processing:
+ *  - Anthropic (Claude) via the official TypeScript SDK
+ *  - Google AI Studio (Gemini) via the Generative Language REST API
  */
 
-/** Model used for recognition. */
-const MODEL = 'claude-opus-5';
+const ANTHROPIC_MODEL = 'claude-opus-5';
+/** Default Gemini model; editable in setup because Google renames models often. */
+export const DEFAULT_GOOGLE_MODEL = 'gemini-2.5-flash';
 
 /** Longest edge sent to the model — larger images cost more without reading better. */
 const MAX_IMAGE_EDGE = 1568;
 
 export type ScanPurpose = 'coupon' | 'card';
+
+/** Everything the scanner needs to know about the configured AI provider. */
+export interface AiSettings {
+  provider: AiProvider;
+  anthropicApiKey: string;
+  googleApiKey: string;
+  googleModel: string;
+}
+
+export const AI_PROVIDER_LABEL: Record<AiProvider, string> = {
+  anthropic: 'Anthropic (Claude)',
+  google: 'Google AI Studio (Gemini)',
+};
+
+/** Pull the AI settings out of the persisted config. */
+export function resolveAiSettings(config: AppConfig): AiSettings {
+  return {
+    provider: config.aiProvider ?? 'anthropic',
+    anthropicApiKey: (config.aiApiKey ?? '').trim(),
+    googleApiKey: (config.googleApiKey ?? '').trim(),
+    googleModel: (config.googleModel ?? '').trim() || DEFAULT_GOOGLE_MODEL,
+  };
+}
+
+/** The key for the selected provider, or '' when none is configured. */
+export function activeApiKey(ai: AiSettings): string {
+  return ai.provider === 'google' ? ai.googleApiKey : ai.anthropicApiKey;
+}
 
 export interface ScanCandidate {
   /** Normalised code (digits only for numeric barcodes). */
@@ -44,7 +77,7 @@ export interface ScanResult {
   notes: string | null;
 }
 
-/** Shape the model is constrained to return (structured outputs). */
+/** Shape both providers are constrained to return. */
 interface RawExtraction {
   codes: {
     value: string;
@@ -52,49 +85,85 @@ interface RawExtraction {
     kind: 'coupon' | 'loyalty_card' | 'other';
     confidence: 'high' | 'medium' | 'low';
   }[];
-  title: string | null;
-  discount: string | null;
-  expires_at: string | null;
-  category: 'fuel' | 'store' | null;
-  notes: string | null;
+  title?: string | null;
+  discount?: string | null;
+  expires_at?: string | null;
+  category?: 'fuel' | 'store' | null;
+  notes?: string | null;
 }
 
-const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
+const FIELD_DOCS = {
+  value: 'The code exactly as printed. For numeric barcodes return digits only, no spaces or separators.',
+  label: 'Short Portuguese description of where the code was read, e.g. "Dígitos sob o código de barras".',
+  title: 'Coupon title as printed, in Portuguese.',
+  discount: 'Discount value as printed, e.g. "15€" or "0,06€/L".',
+  expires_at: 'Expiry date in yyyy-mm-dd, only if printed.',
+  notes: 'One short sentence in Portuguese if nothing readable was found or something is ambiguous.',
+  codes: 'Every code a cashier could scan or type, best candidate first.',
+};
 
-const EXTRACTION_SCHEMA = {
+const KIND_VALUES = ['coupon', 'loyalty_card', 'other'];
+const CONFIDENCE_VALUES = ['high', 'medium', 'low'];
+const CATEGORY_VALUES = ['fuel', 'store'];
+
+/** JSON Schema for Anthropic structured outputs (draft 2020-12 subset). */
+const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
+const ANTHROPIC_SCHEMA = {
   type: 'object',
   properties: {
     codes: {
       type: 'array',
-      description: 'Every code a cashier could scan or type, best candidate first.',
+      description: FIELD_DOCS.codes,
       items: {
         type: 'object',
         properties: {
-          value: {
-            type: 'string',
-            description:
-              'The code exactly as printed. For numeric barcodes return digits only, no spaces or separators.',
-          },
-          label: {
-            type: 'string',
-            description: 'Short Portuguese description of where the code was read, e.g. "Dígitos sob o código de barras".',
-          },
-          kind: { type: 'string', enum: ['coupon', 'loyalty_card', 'other'] },
-          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+          value: { type: 'string', description: FIELD_DOCS.value },
+          label: { type: 'string', description: FIELD_DOCS.label },
+          kind: { type: 'string', enum: KIND_VALUES },
+          confidence: { type: 'string', enum: CONFIDENCE_VALUES },
         },
         required: ['value', 'label', 'kind', 'confidence'],
         additionalProperties: false,
       },
     },
-    title: nullable({ type: 'string', description: 'Coupon title as printed, in Portuguese.' }),
-    discount: nullable({ type: 'string', description: 'Discount value as printed, e.g. "15€" or "0,06€/L".' }),
-    expires_at: nullable({ type: 'string', description: 'Expiry date in yyyy-mm-dd, only if printed.' }),
-    category: nullable({ type: 'string', enum: ['fuel', 'store'] }),
-    notes: nullable({ type: 'string', description: 'One short sentence in Portuguese if nothing readable was found or something is ambiguous.' }),
+    title: nullable({ type: 'string', description: FIELD_DOCS.title }),
+    discount: nullable({ type: 'string', description: FIELD_DOCS.discount }),
+    expires_at: nullable({ type: 'string', description: FIELD_DOCS.expires_at }),
+    category: nullable({ type: 'string', enum: CATEGORY_VALUES }),
+    notes: nullable({ type: 'string', description: FIELD_DOCS.notes }),
   },
   required: ['codes', 'title', 'discount', 'expires_at', 'category', 'notes'],
   additionalProperties: false,
-} as const;
+};
+
+/** Same schema in Gemini's OpenAPI-style `responseSchema` dialect. */
+const GEMINI_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    codes: {
+      type: 'ARRAY',
+      description: FIELD_DOCS.codes,
+      items: {
+        type: 'OBJECT',
+        properties: {
+          value: { type: 'STRING', description: FIELD_DOCS.value },
+          label: { type: 'STRING', description: FIELD_DOCS.label },
+          kind: { type: 'STRING', enum: KIND_VALUES },
+          confidence: { type: 'STRING', enum: CONFIDENCE_VALUES },
+        },
+        required: ['value', 'label', 'kind', 'confidence'],
+        propertyOrdering: ['value', 'label', 'kind', 'confidence'],
+      },
+    },
+    title: { type: 'STRING', description: FIELD_DOCS.title, nullable: true },
+    discount: { type: 'STRING', description: FIELD_DOCS.discount, nullable: true },
+    expires_at: { type: 'STRING', description: FIELD_DOCS.expires_at, nullable: true },
+    category: { type: 'STRING', enum: CATEGORY_VALUES, nullable: true },
+    notes: { type: 'STRING', description: FIELD_DOCS.notes, nullable: true },
+  },
+  required: ['codes'],
+  propertyOrdering: ['codes', 'title', 'discount', 'expires_at', 'category', 'notes'],
+};
 
 const SYSTEM_PROMPT = `You read photos and screenshots for a Portuguese supermarket loyalty app (Pingo Doce, Poupa Mais, BP fuel coupons) and extract the codes a cashier would scan or type.
 
@@ -106,6 +175,12 @@ Rules:
 - Never invent or "complete" digits you cannot read. If part of a code is unreadable, return what you can read with confidence "low" and explain in notes.
 - Ignore phone numbers, NIFs, prices, dates and store numbers unless nothing else looks like a code — then return them with kind "other".
 - Only fill title, discount, expires_at and category when they are clearly printed on the coupon; otherwise null.`;
+
+function userPrompt(purpose: ScanPurpose): string {
+  return purpose === 'card'
+    ? 'Extract the loyalty card number(s) from this image. If it is a Pingo Doce / Poupa Mais card, both the "O Meu Pingo Doce" and "Poupa Mais" numbers may be present — return each as its own candidate with a label saying which is which.'
+    : 'Extract the coupon / voucher code(s) from this image, plus the coupon title, discount and expiry date when printed.';
+}
 
 /** Human-readable error for the scanner UI (Portuguese, like the rest of the app). */
 export class ScanError extends Error {
@@ -119,12 +194,17 @@ export class ScanError extends Error {
   }
 }
 
+interface PreparedImage {
+  data: string;
+  mediaType: 'image/jpeg';
+}
+
 /**
  * Downscale and re-encode a photo as JPEG.
  * Phone photos are 3–12 MP HEIC/JPEG; the model reads codes just as well at
  * ~1.5k px, and the smaller payload keeps the request fast on mobile data.
  */
-export async function prepareImage(file: File): Promise<{ data: string; mediaType: 'image/jpeg' }> {
+export async function prepareImage(file: File): Promise<PreparedImage> {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -157,15 +237,6 @@ export async function prepareImage(file: File): Promise<{ data: string; mediaTyp
   }
 }
 
-/**
- * The key comes only from the on-device setting. There is intentionally no
- * build-time (`NEXT_PUBLIC_*`) fallback: this repo deploys to a public static
- * host, and anything inlined at build time would ship to every visitor.
- */
-export function resolveApiKey(configured: string | undefined): string {
-  return (configured ?? '').trim();
-}
-
 /** Keep only characters that can appear in a barcode value. */
 function normaliseCode(raw: string): string {
   const trimmed = raw.trim();
@@ -178,34 +249,82 @@ export function formatForCode(code: string): BarcodeFormat {
   return isValidEan13(code) ? 'EAN13' : 'CODE128';
 }
 
-/** Send a photo to Claude and return the codes found in it. */
+function parseExtraction(text: string): RawExtraction {
+  try {
+    return JSON.parse(text) as RawExtraction;
+  } catch {
+    throw new ScanError('Resposta inesperada do serviço de reconhecimento. Tente de novo.');
+  }
+}
+
+function toScanResult(raw: RawExtraction): ScanResult {
+  const seen = new Set<string>();
+  const candidates: ScanCandidate[] = [];
+  for (const entry of raw.codes ?? []) {
+    const code = normaliseCode(entry.value ?? '');
+    if (code.length < 4 || seen.has(code)) continue;
+    seen.add(code);
+    candidates.push({
+      code,
+      format: formatForCode(code),
+      label: entry.label || 'Código detetado',
+      kind: KIND_VALUES.includes(entry.kind) ? entry.kind : 'other',
+      confidence: CONFIDENCE_VALUES.includes(entry.confidence) ? entry.confidence : 'low',
+    });
+  }
+
+  return {
+    candidates,
+    title: raw.title?.trim() || null,
+    discount: raw.discount?.trim() || null,
+    expiresAt: raw.expires_at && /^\d{4}-\d{2}-\d{2}$/.test(raw.expires_at) ? raw.expires_at : null,
+    couponKind: raw.category === 'fuel' || raw.category === 'store' ? raw.category : null,
+    notes: raw.notes?.trim() || null,
+  };
+}
+
+/** Send a photo to the configured provider and return the codes found in it. */
 export async function extractCodes(
   file: File,
-  apiKey: string,
+  ai: AiSettings,
   purpose: ScanPurpose
 ): Promise<ScanResult> {
-  if (!apiKey) {
-    throw new ScanError('Configure a chave API no ecrã de configuração para usar o reconhecimento.', false);
+  if (!activeApiKey(ai)) {
+    throw new ScanError(
+      `Configure a chave API de ${AI_PROVIDER_LABEL[ai.provider]} no ecrã de configuração para usar o reconhecimento.`,
+      false
+    );
   }
 
   const image = await prepareImage(file);
+  const raw =
+    ai.provider === 'google'
+      ? await extractWithGemini(image, ai, purpose)
+      : await extractWithAnthropic(image, ai.anthropicApiKey, purpose);
+  return toScanResult(raw);
+}
 
+// ---------------------------------------------------------------------------
+// Anthropic (Claude)
+// ---------------------------------------------------------------------------
+
+async function extractWithAnthropic(
+  image: PreparedImage,
+  apiKey: string,
+  purpose: ScanPurpose
+): Promise<RawExtraction> {
   const client = new Anthropic({
     apiKey,
+    // Deliberate: static site, key lives on the device (see file header).
     dangerouslyAllowBrowser: true,
     timeout: 90_000,
     maxRetries: 1,
   });
 
-  const ask =
-    purpose === 'card'
-      ? 'Extract the loyalty card number(s) from this image. If it is a Pingo Doce / Poupa Mais card, both the "O Meu Pingo Doce" and "Poupa Mais" numbers may be present — return each as its own candidate with a label saying which is which.'
-      : 'Extract the coupon / voucher code(s) from this image, plus the coupon title, discount and expiry date when printed.';
-
   let response: Anthropic.Beta.BetaMessage;
   try {
     response = await client.beta.messages.create({
-      model: MODEL,
+      model: ANTHROPIC_MODEL,
       max_tokens: 2048,
       // If the primary model declines the request, Anthropic re-runs it on a
       // fallback model inside the same call instead of failing the scan.
@@ -214,7 +333,7 @@ export async function extractCodes(
       system: SYSTEM_PROMPT,
       output_config: {
         effort: 'medium',
-        format: { type: 'json_schema', schema: EXTRACTION_SCHEMA as unknown as Record<string, unknown> },
+        format: { type: 'json_schema', schema: ANTHROPIC_SCHEMA },
       },
       messages: [
         {
@@ -224,14 +343,14 @@ export async function extractCodes(
               type: 'image',
               source: { type: 'base64', media_type: image.mediaType, data: image.data },
             },
-            { type: 'text', text: ask },
+            { type: 'text', text: userPrompt(purpose) },
           ],
         },
       ],
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError) {
-      throw new ScanError('Chave API inválida. Verifique-a no ecrã de configuração.', false);
+      throw new ScanError('Chave API Anthropic inválida. Verifique-a no ecrã de configuração.', false);
     }
     if (error instanceof Anthropic.PermissionDeniedError) {
       throw new ScanError('Esta chave API não tem permissão para usar o modelo.', false);
@@ -259,35 +378,103 @@ export async function extractCodes(
     .filter((block): block is Anthropic.Beta.BetaTextBlock => block.type === 'text')
     .map((block) => block.text)
     .join('');
+  return parseExtraction(text);
+}
 
-  let raw: RawExtraction;
-  try {
-    raw = JSON.parse(text) as RawExtraction;
-  } catch {
-    throw new ScanError('Resposta inesperada do serviço de reconhecimento. Tente de novo.');
-  }
+// ---------------------------------------------------------------------------
+// Google AI Studio (Gemini)
+// ---------------------------------------------------------------------------
 
-  const seen = new Set<string>();
-  const candidates: ScanCandidate[] = [];
-  for (const entry of raw.codes ?? []) {
-    const code = normaliseCode(entry.value ?? '');
-    if (code.length < 4 || seen.has(code)) continue;
-    seen.add(code);
-    candidates.push({
-      code,
-      format: formatForCode(code),
-      label: entry.label || 'Código detetado',
-      kind: entry.kind,
-      confidence: entry.confidence,
-    });
-  }
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-  return {
-    candidates,
-    title: raw.title?.trim() || null,
-    discount: raw.discount?.trim() || null,
-    expiresAt: raw.expires_at && /^\d{4}-\d{2}-\d{2}$/.test(raw.expires_at) ? raw.expires_at : null,
-    couponKind: raw.category ?? null,
-    notes: raw.notes?.trim() || null,
+/** Minimal slice of the generateContent response we read. */
+interface GeminiResponse {
+  candidates?: {
+    content?: { parts?: { text?: string }[] };
+    finishReason?: string;
+  }[];
+  promptFeedback?: { blockReason?: string };
+  error?: { code?: number; status?: string; message?: string };
+}
+
+async function extractWithGemini(
+  image: PreparedImage,
+  ai: AiSettings,
+  purpose: ScanPurpose
+): Promise<RawExtraction> {
+  const model = encodeURIComponent(ai.googleModel || DEFAULT_GOOGLE_MODEL);
+  const body = {
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { inlineData: { mimeType: image.mediaType, data: image.data } },
+          { text: userPrompt(purpose) },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: 'application/json',
+      responseSchema: GEMINI_SCHEMA,
+    },
   };
+
+  let res: Response;
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 90_000);
+    res = await fetch(`${GEMINI_ENDPOINT}/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.googleApiKey },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    window.clearTimeout(timer);
+  } catch {
+    throw new ScanError('Sem ligação ao serviço de reconhecimento. Verifique a internet e tente de novo.');
+  }
+
+  let payload: GeminiResponse;
+  try {
+    payload = (await res.json()) as GeminiResponse;
+  } catch {
+    throw new ScanError(`Erro do serviço de reconhecimento (${res.status}).`);
+  }
+
+  if (!res.ok) {
+    const status = payload.error?.status ?? '';
+    const message = payload.error?.message ?? '';
+    if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(`${status} ${message}`)) {
+      throw new ScanError('Chave API Google inválida. Verifique-a no ecrã de configuração.', false);
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new ScanError('Esta chave API Google não tem permissão para usar o modelo.', false);
+    }
+    if (res.status === 404) {
+      throw new ScanError(
+        `Modelo Gemini "${ai.googleModel}" não encontrado. Verifique o nome no ecrã de configuração.`,
+        false
+      );
+    }
+    if (res.status === 429) {
+      throw new ScanError('Limite de pedidos atingido. Aguarde um momento e tente de novo.');
+    }
+    throw new ScanError(`Erro do serviço de reconhecimento (${res.status}).`);
+  }
+
+  if (payload.promptFeedback?.blockReason) {
+    throw new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
+  }
+  const candidate = payload.candidates?.[0];
+  if (candidate?.finishReason === 'MAX_TOKENS') {
+    throw new ScanError('A resposta foi cortada. Tente uma fotografia mais próxima do código.');
+  }
+  if (candidate?.finishReason && !['STOP', 'MAX_TOKENS'].includes(candidate.finishReason) && !candidate.content) {
+    throw new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
+  }
+
+  const text = (candidate?.content?.parts ?? []).map((p) => p.text ?? '').join('');
+  return parseExtraction(text);
 }

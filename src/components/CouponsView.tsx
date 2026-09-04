@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { resolveApiKey } from '@/lib/scan';
+import { resolveAiSettings } from '@/lib/scan';
 import type { AppConfig, Coupon } from '@/lib/types';
 import CouponDetail from './coupon/CouponDetail';
 import CouponTicket from './coupon/CouponTicket';
@@ -117,7 +117,7 @@ export default function CouponsView({ config, onAddCoupon, onOpenSetup }: Coupon
       {scanning && (
         <CodeScanner
           purpose="coupon"
-          apiKey={resolveApiKey(config.aiApiKey)}
+          ai={resolveAiSettings(config)}
           onPick={handleScanned}
           onClose={() => setScanning(false)}
           onOpenSettings={() => {

@@ -43,6 +43,7 @@ scannable barcodes.
 - [Tailwind CSS 3](https://tailwindcss.com/)
 - [JsBarcode](https://github.com/lindell/JsBarcode) (SVG rendering; CODE128, EAN-13, CODE39, ITF)
 - [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) (Claude vision + structured outputs for code scanning)
+- Google AI Studio [Gemini API](https://ai.google.dev/) (REST, alternative provider for code scanning)
 - TypeScript
 
 ## Project structure
@@ -117,16 +118,22 @@ Serve over **HTTPS** — service workers and home-screen install require it.
 
 ## AI code scanning
 
-Recognition runs on the Claude API (`claude-opus-5`, vision + structured JSON
-output) directly from the browser — the site is fully static, so there is no
-backend to hold a secret. The API key therefore lives on the device:
+Recognition runs directly from the browser — the site is fully static, so
+there is no backend to hold a secret. Two providers are supported and share
+the same prompt, JSON schema and post-processing; pick one under
+**Reconhecimento por IA → Serviço** in the setup screen:
 
-1. Create a key at <https://platform.claude.com/>. Use a **dedicated key with
-   a spend limit** for UAT and revoke it afterwards.
-2. Open the setup screen (*Listas → Configuração (POC)* or `/setup`), paste it
-   under **Reconhecimento por IA → Chave API Anthropic** and **Guardar**. The
-   key is stored in `localStorage` on that device only and is sent to
-   `api.anthropic.com` over HTTPS and nowhere else.
+| Provider | Model | Key | Sent to |
+|---|---|---|---|
+| Anthropic (Claude) | `claude-opus-5` (vision + structured outputs) | <https://platform.claude.com/> | `api.anthropic.com` |
+| Google AI Studio (Gemini) | `gemini-2.5-flash` by default, editable | <https://aistudio.google.com/> → *Get API key* | `generativelanguage.googleapis.com` |
+
+1. Create a **dedicated key with a spend limit** for UAT and revoke it
+   afterwards.
+2. Open the setup screen (*Listas → Configuração (POC)* or `/setup`), choose
+   the provider, paste the key (and optionally a Gemini model name), then
+   **Guardar**. Keys are stored in `localStorage` on that device only and are
+   sent over HTTPS to the chosen provider and nowhere else.
 3. Use *Cupões → Digitalizar* or a camera button in setup: **Tirar foto** opens
    the rear camera, **Carregar imagem** opens the gallery/file picker. Images
    are downscaled to ≤1568 px JPEG in the browser before upload.
