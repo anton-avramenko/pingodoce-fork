@@ -15,7 +15,10 @@ export function defaultConfig(): AppConfig {
     poupaMaisNumber: '2410000000005',
     cardFormat: 'EAN13',
     userName: 'Cliente Demo',
+    aiProvider: 'anthropic',
     aiApiKey: '',
+    googleApiKey: '',
+    googleModel: '',
     coupons: [
       {
         id: 'demo-fuel',

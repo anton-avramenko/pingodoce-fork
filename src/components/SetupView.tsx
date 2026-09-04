@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { AppConfig, BarcodeFormat, Coupon, CouponKind } from '@/lib/types';
+import type { AiProvider, AppConfig, BarcodeFormat, Coupon, CouponKind } from '@/lib/types';
 import { BARCODE_FORMATS } from '@/lib/types';
-import { resolveApiKey } from '@/lib/scan';
+import { AI_PROVIDER_LABEL, DEFAULT_GOOGLE_MODEL, resolveAiSettings } from '@/lib/scan';
 import Barcode from './Barcode';
 import { CameraIcon, CloseIcon, PlusIcon, SparkleIcon, TrashIcon } from './icons';
 import CodeScanner, { type PickedCode } from './scan/CodeScanner';
@@ -52,7 +52,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
   const [draft, setDraft] = useState<AppConfig>(config);
   const [savedFlash, setSavedFlash] = useState(false);
   const [scanTarget, setScanTarget] = useState<ScanTarget | null>(null);
-  const apiKey = resolveApiKey(draft.aiApiKey);
+  const ai = resolveAiSettings(draft);
 
   // Re-sync the draft if the persisted config changes (e.g. after a reset)
   useEffect(() => {
@@ -341,27 +341,82 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
           </div>
           <p className="mt-1 text-[13px] text-ink-soft">
             Os botões de câmara ao lado dos códigos fotografam ou carregam uma imagem
-            (cartão, cupão, talão ou texto) e extraem o número com a API da Anthropic.
+            (cartão, cupão, talão ou texto) e extraem o número com o serviço escolhido.
           </p>
 
           <div className="mt-3">
-            <label className={labelClass} htmlFor="setup-aikey">Chave API Anthropic</label>
-            <input
-              id="setup-aikey"
-              type="password"
-              autoComplete="off"
-              spellCheck={false}
+            <label className={labelClass} htmlFor="setup-aiprovider">Serviço</label>
+            <select
+              id="setup-aiprovider"
               className={inputClass}
-              value={draft.aiApiKey}
-              onChange={(e) => patch({ aiApiKey: e.target.value.trim() })}
-              placeholder="sk-ant-…"
-            />
-            <p className="mt-1.5 text-[11px] text-ink-faint">
-              Guardada apenas neste dispositivo (localStorage). Não partilhe a chave nem a
-              coloque em repositórios públicos. Use uma chave dedicada com limite de gastos e
-              revogue-a no fim dos testes.
-            </p>
+              value={ai.provider}
+              onChange={(e) => patch({ aiProvider: e.target.value as AiProvider })}
+            >
+              {(Object.keys(AI_PROVIDER_LABEL) as AiProvider[]).map((p) => (
+                <option key={p} value={p}>{AI_PROVIDER_LABEL[p]}</option>
+              ))}
+            </select>
           </div>
+
+          {ai.provider === 'anthropic' ? (
+            <div className="mt-3">
+              <label className={labelClass} htmlFor="setup-aikey">Chave API Anthropic</label>
+              <input
+                id="setup-aikey"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                className={inputClass}
+                value={draft.aiApiKey}
+                onChange={(e) => patch({ aiApiKey: e.target.value.trim() })}
+                placeholder="sk-ant-…"
+              />
+              <p className="mt-1.5 text-[11px] text-ink-faint">
+                Crie a chave em platform.claude.com.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="mt-3">
+                <label className={labelClass} htmlFor="setup-googlekey">Chave API Google AI Studio</label>
+                <input
+                  id="setup-googlekey"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={inputClass}
+                  value={draft.googleApiKey}
+                  onChange={(e) => patch({ googleApiKey: e.target.value.trim() })}
+                  placeholder="AIza…"
+                />
+                <p className="mt-1.5 text-[11px] text-ink-faint">
+                  Crie a chave em aistudio.google.com → Get API key.
+                </p>
+              </div>
+              <div className="mt-3">
+                <label className={labelClass} htmlFor="setup-googlemodel">Modelo Gemini</label>
+                <input
+                  id="setup-googlemodel"
+                  className={inputClass}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  value={draft.googleModel}
+                  onChange={(e) => patch({ googleModel: e.target.value.trim() })}
+                  placeholder={DEFAULT_GOOGLE_MODEL}
+                />
+                <p className="mt-1.5 text-[11px] text-ink-faint">
+                  Deixe vazio para usar {DEFAULT_GOOGLE_MODEL}. Precisa de um modelo com visão.
+                </p>
+              </div>
+            </>
+          )}
+
+          <p className="mt-3 text-[11px] text-ink-faint">
+            As chaves ficam guardadas apenas neste dispositivo (localStorage) e são enviadas
+            só para o serviço escolhido. Não as partilhe nem as coloque em repositórios
+            públicos. Use chaves dedicadas com limite de gastos e revogue-as no fim dos testes.
+          </p>
         </section>
 
         <button
@@ -376,7 +431,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
       {scanTarget && (
         <CodeScanner
           purpose={scanTarget.field === 'coupon' ? 'coupon' : 'card'}
-          apiKey={apiKey}
+          ai={ai}
           onPick={applyScan}
           onClose={() => setScanTarget(null)}
         />
