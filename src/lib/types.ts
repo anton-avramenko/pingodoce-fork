@@ -45,10 +45,17 @@ export interface AppConfig {
   googleApiKey: string;
   /** Gemini model name, e.g. "gemini-2.5-flash". Empty = app default. */
   googleModel: string;
+  /** Base URL of the recognition proxy (server/index.mjs), e.g. an ngrok URL. */
+  serverUrl: string;
+  /** Optional shared secret for the proxy (its PROXY_TOKEN). */
+  serverToken: string;
 }
 
-/** AI providers supported for photo recognition. */
-export type AiProvider = 'anthropic' | 'google';
+/**
+ * AI providers supported for photo recognition.
+ * 'server' sends the image to the proxy in server/, which holds the key.
+ */
+export type AiProvider = 'anthropic' | 'google' | 'server';
 
 export const BARCODE_FORMATS: BarcodeFormat[] = [
   'EAN13',

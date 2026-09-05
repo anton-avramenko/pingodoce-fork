@@ -75,8 +75,11 @@ scannable barcodes.
 │   │   └── icons.tsx           # original inline SVG icon set
 │   └── lib/
 │       ├── types.ts            # AppConfig / Coupon models
-│       ├── scan.ts             # Claude API call: image → code candidates
+│       ├── scan-core.mjs       # shared prompt, schemas and provider calls (browser + proxy)
+│       ├── scan.ts             # browser side: image prep, provider dispatch, PT error messages
 │       └── storage.ts          # localStorage load/save/seed + React hook
+├── server/
+│   └── index.mjs               # optional recognition proxy (holds the key; expose via ngrok)
 ├── next.config.mjs             # static export config (+ optional basePath)
 ├── tailwind.config.ts          # brand tokens (green / white / gray / red)
 └── package.json
@@ -118,15 +121,17 @@ Serve over **HTTPS** — service workers and home-screen install require it.
 
 ## AI code scanning
 
-Recognition runs directly from the browser — the site is fully static, so
-there is no backend to hold a secret. Two providers are supported and share
-the same prompt, JSON schema and post-processing; pick one under
-**Reconhecimento por IA → Serviço** in the setup screen:
+The site is fully static, so by default recognition runs directly from the
+browser with a key stored on the device. For testers without a key there is
+an optional proxy you run yourself (see below). All three options share the
+same prompt, JSON schema and post-processing (`src/lib/scan-core.mjs`); pick
+one under **Reconhecimento por IA → Serviço** in the setup screen:
 
-| Provider | Model | Key | Sent to |
+| Serviço | Model | Key | Photo is sent to |
 |---|---|---|---|
 | Anthropic (Claude) | `claude-opus-5` (vision + structured outputs) | <https://platform.claude.com/> | `api.anthropic.com` |
 | Google AI Studio (Gemini) | `gemini-2.5-flash` by default, editable | <https://aistudio.google.com/> → *Get API key* | `generativelanguage.googleapis.com` |
+| Servidor (proxy) | whichever the proxy is configured with | none on the phone | your proxy URL (e.g. ngrok) |
 
 1. Create a **dedicated key with a spend limit** for UAT and revoke it
    afterwards.
@@ -139,9 +144,42 @@ the same prompt, JSON schema and post-processing; pick one under
    are downscaled to ≤1568 px JPEG in the browser before upload.
 
 There is deliberately no `NEXT_PUBLIC_*` key fallback: anything inlined at
-build time would ship to every visitor of the public site. For a production
-build, move the call behind a small proxy (serverless function / worker) that
-holds the key and forwards the image.
+build time would ship to every visitor of the public site.
+
+### Running the recognition proxy (no key on the phone)
+
+`server/index.mjs` is a dependency-free Node script (Node 20+) that accepts
+the photo from the app and calls the provider with a key from its
+environment. Typical UAT setup on a laptop:
+
+```bash
+npm install                                   # once — pulls the Anthropic SDK
+ANTHROPIC_API_KEY=sk-ant-… PROXY_TOKEN=some-secret npm run server
+# or: GOOGLE_API_KEY=AIza… GOOGLE_MODEL=gemini-2.5-flash npm run server
+
+ngrok http 8787                               # in a second terminal
+```
+
+Then on the phone: setup → *Reconhecimento por IA* → **Serviço: Servidor**,
+paste the `https://….ngrok-free.app` URL, the same token, tap **Testar
+ligação** (it calls `GET /health`) and **Guardar**.
+
+Environment variables:
+
+| Variable | Meaning |
+|---|---|
+| `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | one of them is required; picks the provider |
+| `AI_PROVIDER` | `anthropic` or `google`, only needed when both keys are set |
+| `GOOGLE_MODEL` | Gemini model name (default `gemini-2.5-flash`) |
+| `PROXY_TOKEN` | optional shared secret; without it anyone who learns the ngrok URL can spend your key |
+| `PORT` | listen port (default `8787`) |
+
+Endpoints: `GET /health` → `{ ok, provider, model, requiresToken }`;
+`POST /scan` with `{ image: <base64>, mediaType, purpose }` → the extraction
+JSON, or `{ error: { code, detail } }` with a matching status. CORS allows any
+origin (the ngrok hostname changes on every restart); the app sends
+`ngrok-skip-browser-warning` so ngrok's free-tier interstitial doesn't get in
+the way.
 
 What the model returns: every code it can read (digits under a barcode,
 voucher numbers, alphanumeric promo codes) with a confidence level, plus the
