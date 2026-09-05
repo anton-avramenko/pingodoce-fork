@@ -154,10 +154,23 @@ environment. Typical UAT setup on a laptop:
 
 ```bash
 npm install                                   # once — pulls the Anthropic SDK
-ANTHROPIC_API_KEY=sk-ant-… PROXY_TOKEN=some-secret npm run server
-# or: GOOGLE_API_KEY=AIza… GOOGLE_MODEL=gemini-2.5-flash npm run server
+cp server/.env.example server/.env            # then fill in GOOGLE_API_KEY or ANTHROPIC_API_KEY + PROXY_TOKEN
+npm run server
 
 ngrok http 8787                               # in a second terminal
+```
+
+`server/.env` is git-ignored and works the same on macOS, Linux and Windows.
+Real environment variables override it, so one-off overrides still work:
+
+```bash
+# bash / zsh
+GOOGLE_API_KEY=AIza… PROXY_TOKEN=some-secret npm run server
+```
+
+```powershell
+# PowerShell (Windows) — the KEY=value prefix syntax is bash-only
+$env:GOOGLE_API_KEY = "AIza…"; $env:PROXY_TOKEN = "some-secret"; npm run server
 ```
 
 Then on the phone: setup → *Reconhecimento por IA* → **Serviço: Servidor**,
