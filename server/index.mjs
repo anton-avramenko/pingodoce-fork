@@ -9,7 +9,7 @@
  *   ANTHROPIC_API_KEY=sk-ant-… npm run server
  *   ngrok http 8787
  *
- * Environment:
+ * Environment (or a server/.env file — see server/.env.example; real env vars win):
  *   ANTHROPIC_API_KEY   use Anthropic (Claude)                 — one of the two keys is required
  *   GOOGLE_API_KEY      use Google AI Studio (Gemini)
  *   AI_PROVIDER         "anthropic" | "google" — only needed when both keys are set
@@ -25,6 +25,9 @@
  */
 
 import { createServer } from 'node:http';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ANTHROPIC_MODEL,
   callAnthropic,
@@ -32,6 +35,35 @@ import {
   DEFAULT_GOOGLE_MODEL,
   ProviderError,
 } from '../src/lib/scan-core.mjs';
+
+/**
+ * Load server/.env if present (KEY=value lines, # comments, optional quotes).
+ * Lets Windows/PowerShell users avoid shell-specific env syntax. Variables
+ * already set in the real environment take precedence.
+ */
+function loadDotEnv() {
+  const file = join(dirname(fileURLToPath(import.meta.url)), '.env');
+  let text;
+  try {
+    text = readFileSync(file, 'utf8');
+  } catch {
+    return false;
+  }
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = value;
+  }
+  return true;
+}
+const DOTENV_LOADED = loadDotEnv();
 
 const PORT = Number(process.env.PORT) || 8787;
 const TOKEN = (process.env.PROXY_TOKEN ?? '').trim();
@@ -182,10 +214,11 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Recognition proxy listening on http://localhost:${PORT}`);
+  if (DOTENV_LOADED) console.log('Loaded settings from server/.env');
   if (PROVIDER) {
     console.log(`Provider: ${PROVIDER} (${MODEL})`);
   } else {
-    console.warn('No API key configured — set ANTHROPIC_API_KEY or GOOGLE_API_KEY. /scan will return 503.');
+    console.warn('No API key configured — set ANTHROPIC_API_KEY or GOOGLE_API_KEY (env or server/.env). /scan will return 503.');
   }
   console.log(TOKEN ? 'Token: required (PROXY_TOKEN set)' : 'Token: none (PROXY_TOKEN not set — anyone with the URL can use your key)');
   console.log(`Expose it with:  ngrok http ${PORT}`);
