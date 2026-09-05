@@ -3,7 +3,14 @@
 import { useEffect, useState } from 'react';
 import type { AiProvider, AppConfig, BarcodeFormat, Coupon, CouponKind } from '@/lib/types';
 import { BARCODE_FORMATS } from '@/lib/types';
-import { AI_PROVIDER_LABEL, DEFAULT_GOOGLE_MODEL, resolveAiSettings } from '@/lib/scan';
+import {
+  AI_PROVIDER_LABEL,
+  checkProxy,
+  DEFAULT_GOOGLE_MODEL,
+  normaliseServerUrl,
+  resolveAiSettings,
+  ScanError,
+} from '@/lib/scan';
 import Barcode from './Barcode';
 import { CameraIcon, CloseIcon, PlusIcon, SparkleIcon, TrashIcon } from './icons';
 import CodeScanner, { type PickedCode } from './scan/CodeScanner';
@@ -53,6 +60,26 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
   const [savedFlash, setSavedFlash] = useState(false);
   const [scanTarget, setScanTarget] = useState<ScanTarget | null>(null);
   const ai = resolveAiSettings(draft);
+  const [proxyCheck, setProxyCheck] = useState<
+    { state: 'idle' } | { state: 'busy' } | { state: 'ok'; text: string } | { state: 'error'; text: string }
+  >({ state: 'idle' });
+
+  /** "Testar ligação": GET /health on the proxy with the current draft settings. */
+  const testProxy = async () => {
+    setProxyCheck({ state: 'busy' });
+    try {
+      const health = await checkProxy(ai);
+      setProxyCheck({
+        state: 'ok',
+        text: `Ligado · ${health.provider} (${health.model})${health.requiresToken ? ' · token aceite' : ''}`,
+      });
+    } catch (error) {
+      setProxyCheck({
+        state: 'error',
+        text: error instanceof ScanError ? error.message : 'Não foi possível contactar o servidor.',
+      });
+    }
+  };
 
   // Re-sync the draft if the persisted config changes (e.g. after a reset)
   useEffect(() => {
@@ -358,7 +385,67 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
             </select>
           </div>
 
-          {ai.provider === 'anthropic' ? (
+          {ai.provider === 'server' && (
+            <>
+              <div className="mt-3">
+                <label className={labelClass} htmlFor="setup-serverurl">Endereço do servidor</label>
+                <input
+                  id="setup-serverurl"
+                  type="url"
+                  inputMode="url"
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className={inputClass}
+                  value={draft.serverUrl}
+                  onChange={(e) => {
+                    patch({ serverUrl: e.target.value.trim() });
+                    setProxyCheck({ state: 'idle' });
+                  }}
+                  onBlur={(e) => patch({ serverUrl: normaliseServerUrl(e.target.value) })}
+                  placeholder="https://xxxx.ngrok-free.app"
+                />
+                <p className="mt-1.5 text-[11px] text-ink-faint">
+                  URL público do proxy (pasta <code>server/</code> deste repositório) — por exemplo o
+                  endereço que o ngrok mostra. A chave API fica nesse servidor, não no telemóvel.
+                </p>
+              </div>
+              <div className="mt-3">
+                <label className={labelClass} htmlFor="setup-servertoken">Token (opcional)</label>
+                <input
+                  id="setup-servertoken"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  className={inputClass}
+                  value={draft.serverToken}
+                  onChange={(e) => {
+                    patch({ serverToken: e.target.value.trim() });
+                    setProxyCheck({ state: 'idle' });
+                  }}
+                  placeholder="O mesmo valor que PROXY_TOKEN no servidor"
+                />
+              </div>
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={testProxy}
+                  disabled={!ai.serverUrl || proxyCheck.state === 'busy'}
+                  className="rounded-lg bg-brand-tint px-4 py-2 text-[13px] font-bold text-brand-dark active:bg-brand-tintDark disabled:opacity-50"
+                >
+                  {proxyCheck.state === 'busy' ? 'A testar…' : 'Testar ligação'}
+                </button>
+                {proxyCheck.state === 'ok' && (
+                  <p className="text-[12px] font-semibold text-brand">{proxyCheck.text}</p>
+                )}
+                {proxyCheck.state === 'error' && (
+                  <p className="text-[12px] font-semibold text-accent-red">{proxyCheck.text}</p>
+                )}
+              </div>
+            </>
+          )}
+
+          {ai.provider === 'anthropic' && (
             <div className="mt-3">
               <label className={labelClass} htmlFor="setup-aikey">Chave API Anthropic</label>
               <input
@@ -375,7 +462,9 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
                 Crie a chave em platform.claude.com.
               </p>
             </div>
-          ) : (
+          )}
+
+          {ai.provider === 'google' && (
             <>
               <div className="mt-3">
                 <label className={labelClass} htmlFor="setup-googlekey">Chave API Google AI Studio</label>
@@ -413,9 +502,9 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
           )}
 
           <p className="mt-3 text-[11px] text-ink-faint">
-            As chaves ficam guardadas apenas neste dispositivo (localStorage) e são enviadas
-            só para o serviço escolhido. Não as partilhe nem as coloque em repositórios
-            públicos. Use chaves dedicadas com limite de gastos e revogue-as no fim dos testes.
+            {ai.provider === 'server'
+              ? 'Sem chave no telemóvel: as fotos vão para o servidor indicado, que chama o serviço de IA com a chave dele. Proteja o servidor com um token se o endereço for público.'
+              : 'As chaves ficam guardadas apenas neste dispositivo (localStorage) e são enviadas só para o serviço escolhido. Não as partilhe nem as coloque em repositórios públicos. Use chaves dedicadas com limite de gastos e revogue-as no fim dos testes.'}
           </p>
         </section>
 

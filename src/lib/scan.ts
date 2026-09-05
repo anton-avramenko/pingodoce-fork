@@ -1,25 +1,30 @@
 'use client';
 
-import Anthropic from '@anthropic-ai/sdk';
 import { isValidEan13 } from './barcode';
+import {
+  callAnthropic,
+  callGemini,
+  DEFAULT_GOOGLE_MODEL,
+  PROVIDER_ERROR_CODES,
+  ProviderError,
+} from './scan-core.mjs';
 import type { AiProvider, AppConfig, BarcodeFormat, CouponKind } from './types';
 
-/**
- * AI-powered code extraction.
- *
- * The POC is a fully static site (no backend), so recognition calls the
- * provider API directly from the browser with a key the tester enters on the
- * device. The key is stored only on the phone and never bundled.
- *
- * Two providers are supported and share the same prompt, output schema and
- * post-processing:
- *  - Anthropic (Claude) via the official TypeScript SDK
- *  - Google AI Studio (Gemini) via the Generative Language REST API
- */
+export { DEFAULT_GOOGLE_MODEL };
 
-const ANTHROPIC_MODEL = 'claude-opus-5';
-/** Default Gemini model; editable in setup because Google renames models often. */
-export const DEFAULT_GOOGLE_MODEL = 'gemini-2.5-flash';
+/**
+ * Browser side of the AI code extraction.
+ *
+ * The POC is a fully static site (no backend of its own), so there are three
+ * ways to reach a vision model, chosen in the setup screen:
+ *  - Anthropic (Claude) directly, with a key stored on the device
+ *  - Google AI Studio (Gemini) directly, with a key stored on the device
+ *  - a proxy server (server/index.mjs) that holds the key — for testers
+ *    without one; typically a laptop exposed through ngrok
+ *
+ * Prompt, schema and provider calls live in scan-core.mjs and are shared with
+ * the proxy, so all three paths return the same shape.
+ */
 
 /** Longest edge sent to the model — larger images cost more without reading better. */
 const MAX_IMAGE_EDGE = 1568;
@@ -32,11 +37,16 @@ export interface AiSettings {
   anthropicApiKey: string;
   googleApiKey: string;
   googleModel: string;
+  /** Base URL of the proxy, e.g. https://xxxx.ngrok-free.app (no trailing slash). */
+  serverUrl: string;
+  /** Optional shared secret sent as a Bearer token to the proxy. */
+  serverToken: string;
 }
 
 export const AI_PROVIDER_LABEL: Record<AiProvider, string> = {
   anthropic: 'Anthropic (Claude)',
   google: 'Google AI Studio (Gemini)',
+  server: 'Servidor (proxy, sem chave no telemóvel)',
 };
 
 /** Pull the AI settings out of the persisted config. */
@@ -46,12 +56,36 @@ export function resolveAiSettings(config: AppConfig): AiSettings {
     anthropicApiKey: (config.aiApiKey ?? '').trim(),
     googleApiKey: (config.googleApiKey ?? '').trim(),
     googleModel: (config.googleModel ?? '').trim() || DEFAULT_GOOGLE_MODEL,
+    serverUrl: normaliseServerUrl(config.serverUrl ?? ''),
+    serverToken: (config.serverToken ?? '').trim(),
   };
 }
 
-/** The key for the selected provider, or '' when none is configured. */
-export function activeApiKey(ai: AiSettings): string {
-  return ai.provider === 'google' ? ai.googleApiKey : ai.anthropicApiKey;
+/** Trim, add https:// when the scheme is missing, drop trailing slashes. */
+export function normaliseServerUrl(raw: string): string {
+  let url = raw.trim();
+  if (!url) return '';
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  return url.replace(/\/+$/, '');
+}
+
+/** True when the selected provider has what it needs to run a scan. */
+export function isAiConfigured(ai: AiSettings): boolean {
+  switch (ai.provider) {
+    case 'google':
+      return Boolean(ai.googleApiKey);
+    case 'server':
+      return Boolean(ai.serverUrl);
+    default:
+      return Boolean(ai.anthropicApiKey);
+  }
+}
+
+/** What the tester must fill in for the selected provider (for the missing-config notice). */
+export function missingConfigHint(ai: AiSettings): string {
+  return ai.provider === 'server'
+    ? 'Introduza o endereço do servidor na secção “Reconhecimento por IA” do ecrã de configuração.'
+    : `O reconhecimento usa ${AI_PROVIDER_LABEL[ai.provider]}. Introduza a chave na secção “Reconhecimento por IA” do ecrã de configuração.`;
 }
 
 export interface ScanCandidate {
@@ -77,120 +111,71 @@ export interface ScanResult {
   notes: string | null;
 }
 
-/** Shape both providers are constrained to return. */
+/** Shape every provider (and the proxy) returns. */
 interface RawExtraction {
-  codes: {
-    value: string;
-    label: string;
-    kind: 'coupon' | 'loyalty_card' | 'other';
-    confidence: 'high' | 'medium' | 'low';
+  codes?: {
+    value?: string;
+    label?: string;
+    kind?: string;
+    confidence?: string;
   }[];
   title?: string | null;
   discount?: string | null;
   expires_at?: string | null;
-  category?: 'fuel' | 'store' | null;
+  category?: string | null;
   notes?: string | null;
 }
 
-const FIELD_DOCS = {
-  value: 'The code exactly as printed. For numeric barcodes return digits only, no spaces or separators.',
-  label: 'Short Portuguese description of where the code was read, e.g. "Dígitos sob o código de barras".',
-  title: 'Coupon title as printed, in Portuguese.',
-  discount: 'Discount value as printed, e.g. "15€" or "0,06€/L".',
-  expires_at: 'Expiry date in yyyy-mm-dd, only if printed.',
-  notes: 'One short sentence in Portuguese if nothing readable was found or something is ambiguous.',
-  codes: 'Every code a cashier could scan or type, best candidate first.',
-};
-
-const KIND_VALUES = ['coupon', 'loyalty_card', 'other'];
-const CONFIDENCE_VALUES = ['high', 'medium', 'low'];
-const CATEGORY_VALUES = ['fuel', 'store'];
-
-/** JSON Schema for Anthropic structured outputs (draft 2020-12 subset). */
-const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
-const ANTHROPIC_SCHEMA = {
-  type: 'object',
-  properties: {
-    codes: {
-      type: 'array',
-      description: FIELD_DOCS.codes,
-      items: {
-        type: 'object',
-        properties: {
-          value: { type: 'string', description: FIELD_DOCS.value },
-          label: { type: 'string', description: FIELD_DOCS.label },
-          kind: { type: 'string', enum: KIND_VALUES },
-          confidence: { type: 'string', enum: CONFIDENCE_VALUES },
-        },
-        required: ['value', 'label', 'kind', 'confidence'],
-        additionalProperties: false,
-      },
-    },
-    title: nullable({ type: 'string', description: FIELD_DOCS.title }),
-    discount: nullable({ type: 'string', description: FIELD_DOCS.discount }),
-    expires_at: nullable({ type: 'string', description: FIELD_DOCS.expires_at }),
-    category: nullable({ type: 'string', enum: CATEGORY_VALUES }),
-    notes: nullable({ type: 'string', description: FIELD_DOCS.notes }),
-  },
-  required: ['codes', 'title', 'discount', 'expires_at', 'category', 'notes'],
-  additionalProperties: false,
-};
-
-/** Same schema in Gemini's OpenAPI-style `responseSchema` dialect. */
-const GEMINI_SCHEMA = {
-  type: 'OBJECT',
-  properties: {
-    codes: {
-      type: 'ARRAY',
-      description: FIELD_DOCS.codes,
-      items: {
-        type: 'OBJECT',
-        properties: {
-          value: { type: 'STRING', description: FIELD_DOCS.value },
-          label: { type: 'STRING', description: FIELD_DOCS.label },
-          kind: { type: 'STRING', enum: KIND_VALUES },
-          confidence: { type: 'STRING', enum: CONFIDENCE_VALUES },
-        },
-        required: ['value', 'label', 'kind', 'confidence'],
-        propertyOrdering: ['value', 'label', 'kind', 'confidence'],
-      },
-    },
-    title: { type: 'STRING', description: FIELD_DOCS.title, nullable: true },
-    discount: { type: 'STRING', description: FIELD_DOCS.discount, nullable: true },
-    expires_at: { type: 'STRING', description: FIELD_DOCS.expires_at, nullable: true },
-    category: { type: 'STRING', enum: CATEGORY_VALUES, nullable: true },
-    notes: { type: 'STRING', description: FIELD_DOCS.notes, nullable: true },
-  },
-  required: ['codes'],
-  propertyOrdering: ['codes', 'title', 'discount', 'expires_at', 'category', 'notes'],
-};
-
-const SYSTEM_PROMPT = `You read photos and screenshots for a Portuguese supermarket loyalty app (Pingo Doce, Poupa Mais, BP fuel coupons) and extract the codes a cashier would scan or type.
-
-Inputs can be: a physical loyalty card, a printed or digital coupon, a fuel voucher, a till receipt, an SMS or email screenshot, or plain free text containing a code.
-
-Rules:
-- Return every code candidate you can actually read: digits printed under a barcode, coupon/voucher numbers, alphanumeric promo codes. Put the most likely code first.
-- Transcribe characters exactly. For numeric barcodes return digits only. Pingo Doce, Poupa Mais and BP codes are usually EAN-13 (13 digits).
-- Never invent or "complete" digits you cannot read. If part of a code is unreadable, return what you can read with confidence "low" and explain in notes.
-- Ignore phone numbers, NIFs, prices, dates and store numbers unless nothing else looks like a code — then return them with kind "other".
-- Only fill title, discount, expires_at and category when they are clearly printed on the coupon; otherwise null.`;
-
-function userPrompt(purpose: ScanPurpose): string {
-  return purpose === 'card'
-    ? 'Extract the loyalty card number(s) from this image. If it is a Pingo Doce / Poupa Mais card, both the "O Meu Pingo Doce" and "Poupa Mais" numbers may be present — return each as its own candidate with a label saying which is which.'
-    : 'Extract the coupon / voucher code(s) from this image, plus the coupon title, discount and expiry date when printed.';
-}
+type ProviderErrorCode = (typeof PROVIDER_ERROR_CODES)[number];
 
 /** Human-readable error for the scanner UI (Portuguese, like the rest of the app). */
 export class ScanError extends Error {
   constructor(
     message: string,
-    /** Whether a retry with the same key makes sense. */
+    /** Whether a retry with the same settings makes sense. */
     public readonly retryable = true
   ) {
     super(message);
     this.name = 'ScanError';
+  }
+}
+
+/** Map a provider failure code to the message shown in the sheet. */
+function scanErrorFromCode(code: string, detail: string, provider: AiProvider): ScanError {
+  const viaServer = provider === 'server';
+  switch (code as ProviderErrorCode) {
+    case 'invalid_key':
+      return new ScanError(
+        viaServer
+          ? 'A chave API configurada no servidor é inválida.'
+          : 'Chave API inválida. Verifique-a no ecrã de configuração.',
+        false
+      );
+    case 'forbidden':
+      return new ScanError('Esta chave API não tem permissão para usar o modelo.', false);
+    case 'model_not_found':
+      return new ScanError(
+        `Modelo "${detail}" não encontrado. Verifique o nome do modelo${viaServer ? ' no servidor' : ' no ecrã de configuração'}.`,
+        false
+      );
+    case 'rate_limit':
+      return new ScanError('Limite de pedidos atingido. Aguarde um momento e tente de novo.');
+    case 'network':
+      return new ScanError(
+        viaServer
+          ? 'O servidor não conseguiu contactar o serviço de reconhecimento. Tente de novo.'
+          : 'Sem ligação ao serviço de reconhecimento. Verifique a internet e tente de novo.'
+      );
+    case 'refused':
+      return new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
+    case 'truncated':
+      return new ScanError('A resposta foi cortada. Tente uma fotografia mais próxima do código.');
+    case 'bad_response':
+      return new ScanError('Resposta inesperada do serviço de reconhecimento. Tente de novo.');
+    case 'not_configured':
+      return new ScanError('O servidor não tem nenhuma chave API configurada.', false);
+    default:
+      return new ScanError(`Erro do serviço de reconhecimento${detail ? ` (${detail})` : ''}.`);
   }
 }
 
@@ -249,14 +234,6 @@ export function formatForCode(code: string): BarcodeFormat {
   return isValidEan13(code) ? 'EAN13' : 'CODE128';
 }
 
-function parseExtraction(text: string): RawExtraction {
-  try {
-    return JSON.parse(text) as RawExtraction;
-  } catch {
-    throw new ScanError('Resposta inesperada do serviço de reconhecimento. Tente de novo.');
-  }
-}
-
 function toScanResult(raw: RawExtraction): ScanResult {
   const seen = new Set<string>();
   const candidates: ScanCandidate[] = [];
@@ -264,12 +241,14 @@ function toScanResult(raw: RawExtraction): ScanResult {
     const code = normaliseCode(entry.value ?? '');
     if (code.length < 4 || seen.has(code)) continue;
     seen.add(code);
+    const kind = entry.kind;
+    const confidence = entry.confidence;
     candidates.push({
       code,
       format: formatForCode(code),
       label: entry.label || 'Código detetado',
-      kind: KIND_VALUES.includes(entry.kind) ? entry.kind : 'other',
-      confidence: CONFIDENCE_VALUES.includes(entry.confidence) ? entry.confidence : 'low',
+      kind: kind === 'coupon' || kind === 'loyalty_card' ? kind : 'other',
+      confidence: confidence === 'high' || confidence === 'medium' ? confidence : 'low',
     });
   }
 
@@ -289,192 +268,122 @@ export async function extractCodes(
   ai: AiSettings,
   purpose: ScanPurpose
 ): Promise<ScanResult> {
-  if (!activeApiKey(ai)) {
-    throw new ScanError(
-      `Configure a chave API de ${AI_PROVIDER_LABEL[ai.provider]} no ecrã de configuração para usar o reconhecimento.`,
-      false
-    );
-  }
+  if (!isAiConfigured(ai)) throw new ScanError(missingConfigHint(ai), false);
 
   const image = await prepareImage(file);
-  const raw =
-    ai.provider === 'google'
-      ? await extractWithGemini(image, ai, purpose)
-      : await extractWithAnthropic(image, ai.anthropicApiKey, purpose);
+
+  let raw: RawExtraction;
+  try {
+    if (ai.provider === 'server') {
+      raw = await callProxy(image, ai, purpose);
+    } else if (ai.provider === 'google') {
+      raw = (await callGemini(image, ai.googleApiKey, ai.googleModel, purpose)) as RawExtraction;
+    } else {
+      raw = (await callAnthropic(image, ai.anthropicApiKey, purpose, { browser: true })) as RawExtraction;
+    }
+  } catch (error) {
+    if (error instanceof ProviderError) throw scanErrorFromCode(error.code, error.detail, ai.provider);
+    throw error;
+  }
   return toScanResult(raw);
 }
 
 // ---------------------------------------------------------------------------
-// Anthropic (Claude)
+// Proxy server (server/index.mjs)
 // ---------------------------------------------------------------------------
 
-async function extractWithAnthropic(
-  image: PreparedImage,
-  apiKey: string,
-  purpose: ScanPurpose
-): Promise<RawExtraction> {
-  const client = new Anthropic({
-    apiKey,
-    // Deliberate: static site, key lives on the device (see file header).
-    dangerouslyAllowBrowser: true,
-    timeout: 90_000,
-    maxRetries: 1,
-  });
-
-  let response: Anthropic.Beta.BetaMessage;
-  try {
-    response = await client.beta.messages.create({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 2048,
-      // If the primary model declines the request, Anthropic re-runs it on a
-      // fallback model inside the same call instead of failing the scan.
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
-      system: SYSTEM_PROMPT,
-      output_config: {
-        effort: 'medium',
-        format: { type: 'json_schema', schema: ANTHROPIC_SCHEMA },
-      },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: image.mediaType, data: image.data },
-            },
-            { type: 'text', text: userPrompt(purpose) },
-          ],
-        },
-      ],
-    });
-  } catch (error) {
-    if (error instanceof Anthropic.AuthenticationError) {
-      throw new ScanError('Chave API Anthropic inválida. Verifique-a no ecrã de configuração.', false);
-    }
-    if (error instanceof Anthropic.PermissionDeniedError) {
-      throw new ScanError('Esta chave API não tem permissão para usar o modelo.', false);
-    }
-    if (error instanceof Anthropic.RateLimitError) {
-      throw new ScanError('Limite de pedidos atingido. Aguarde um momento e tente de novo.');
-    }
-    if (error instanceof Anthropic.APIConnectionError) {
-      throw new ScanError('Sem ligação ao serviço de reconhecimento. Verifique a internet e tente de novo.');
-    }
-    if (error instanceof Anthropic.APIError) {
-      throw new ScanError(`Erro do serviço de reconhecimento (${error.status ?? 'desconhecido'}).`);
-    }
-    throw error;
-  }
-
-  if (response.stop_reason === 'refusal') {
-    throw new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
-  }
-  if (response.stop_reason === 'max_tokens') {
-    throw new ScanError('A resposta foi cortada. Tente uma fotografia mais próxima do código.');
-  }
-
-  const text = response.content
-    .filter((block): block is Anthropic.Beta.BetaTextBlock => block.type === 'text')
-    .map((block) => block.text)
-    .join('');
-  return parseExtraction(text);
+/** Shape of the proxy's JSON responses. */
+interface ProxyErrorBody {
+  error?: { code?: string; detail?: string };
 }
 
-// ---------------------------------------------------------------------------
-// Google AI Studio (Gemini)
-// ---------------------------------------------------------------------------
-
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
-
-/** Minimal slice of the generateContent response we read. */
-interface GeminiResponse {
-  candidates?: {
-    content?: { parts?: { text?: string }[] };
-    finishReason?: string;
-  }[];
-  promptFeedback?: { blockReason?: string };
-  error?: { code?: number; status?: string; message?: string };
+export interface ProxyHealth {
+  ok: boolean;
+  provider: string;
+  model: string;
+  requiresToken: boolean;
 }
 
-async function extractWithGemini(
+/** Headers every proxy request carries (auth + ngrok's interstitial bypass). */
+function proxyHeaders(ai: AiSettings): Record<string, string> {
+  const headers: Record<string, string> = {
+    // ngrok's free tier answers browser-looking requests with an HTML warning
+    // page unless this header is present.
+    'ngrok-skip-browser-warning': '1',
+  };
+  if (ai.serverToken) headers.Authorization = `Bearer ${ai.serverToken}`;
+  return headers;
+}
+
+async function callProxy(
   image: PreparedImage,
   ai: AiSettings,
   purpose: ScanPurpose
 ): Promise<RawExtraction> {
-  const model = encodeURIComponent(ai.googleModel || DEFAULT_GOOGLE_MODEL);
-  const body = {
-    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType: image.mediaType, data: image.data } },
-          { text: userPrompt(purpose) },
-        ],
-      },
-    ],
-    generationConfig: {
-      temperature: 0,
-      responseMimeType: 'application/json',
-      responseSchema: GEMINI_SCHEMA,
-    },
-  };
-
   let res: Response;
   try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 90_000);
-    res = await fetch(`${GEMINI_ENDPOINT}/${model}:generateContent`, {
+    res = await fetch(`${ai.serverUrl}/scan`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.googleApiKey },
-      body: JSON.stringify(body),
-      signal: controller.signal,
+      headers: { ...proxyHeaders(ai), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: image.data, mediaType: image.mediaType, purpose }),
+      signal: AbortSignal.timeout(120_000),
     });
-    window.clearTimeout(timer);
   } catch {
-    throw new ScanError('Sem ligação ao serviço de reconhecimento. Verifique a internet e tente de novo.');
+    throw new ScanError(
+      'Sem ligação ao servidor. Confirme que está ligado e que o endereço (ngrok) está atualizado.'
+    );
   }
 
-  let payload: GeminiResponse;
+  if (res.status === 401) {
+    throw new ScanError('O servidor rejeitou o token. Verifique-o no ecrã de configuração.', false);
+  }
+
+  let payload: RawExtraction & ProxyErrorBody;
   try {
-    payload = (await res.json()) as GeminiResponse;
+    payload = (await res.json()) as RawExtraction & ProxyErrorBody;
   } catch {
-    throw new ScanError(`Erro do serviço de reconhecimento (${res.status}).`);
+    throw new ScanError(
+      res.ok
+        ? 'Resposta inesperada do servidor. Tente de novo.'
+        : `O servidor respondeu com erro (${res.status}). Confirme o endereço no ecrã de configuração.`
+    );
   }
 
   if (!res.ok) {
-    const status = payload.error?.status ?? '';
-    const message = payload.error?.message ?? '';
-    if (res.status === 400 && /API key not valid|API_KEY_INVALID/i.test(`${status} ${message}`)) {
-      throw new ScanError('Chave API Google inválida. Verifique-a no ecrã de configuração.', false);
-    }
-    if (res.status === 401 || res.status === 403) {
-      throw new ScanError('Esta chave API Google não tem permissão para usar o modelo.', false);
-    }
-    if (res.status === 404) {
-      throw new ScanError(
-        `Modelo Gemini "${ai.googleModel}" não encontrado. Verifique o nome no ecrã de configuração.`,
-        false
-      );
-    }
-    if (res.status === 429) {
-      throw new ScanError('Limite de pedidos atingido. Aguarde um momento e tente de novo.');
-    }
-    throw new ScanError(`Erro do serviço de reconhecimento (${res.status}).`);
+    if (payload.error?.code) throw scanErrorFromCode(payload.error.code, payload.error.detail ?? '', 'server');
+    throw new ScanError(`O servidor respondeu com erro (${res.status}).`);
   }
+  return payload;
+}
 
-  if (payload.promptFeedback?.blockReason) {
-    throw new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
+/** GET /health on the proxy — used by the "Testar ligação" button in setup. */
+export async function checkProxy(ai: AiSettings): Promise<ProxyHealth> {
+  if (!ai.serverUrl) throw new ScanError('Introduza o endereço do servidor.', false);
+  let res: Response;
+  try {
+    res = await fetch(`${ai.serverUrl}/health`, {
+      headers: proxyHeaders(ai),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new ScanError('Sem ligação ao servidor. Confirme que está ligado e que o endereço está correto.');
   }
-  const candidate = payload.candidates?.[0];
-  if (candidate?.finishReason === 'MAX_TOKENS') {
-    throw new ScanError('A resposta foi cortada. Tente uma fotografia mais próxima do código.');
+  if (res.status === 401) {
+    throw new ScanError('O servidor rejeitou o token.', false);
   }
-  if (candidate?.finishReason && !['STOP', 'MAX_TOKENS'].includes(candidate.finishReason) && !candidate.content) {
-    throw new ScanError('O serviço recusou analisar esta imagem. Tente outra fotografia.');
+  let body: Partial<ProxyHealth>;
+  try {
+    body = (await res.json()) as Partial<ProxyHealth>;
+  } catch {
+    throw new ScanError(`Este endereço não parece ser o servidor do POC (resposta ${res.status}).`, false);
   }
-
-  const text = (candidate?.content?.parts ?? []).map((p) => p.text ?? '').join('');
-  return parseExtraction(text);
+  if (!res.ok || body.ok !== true) {
+    throw new ScanError(`O servidor respondeu com erro (${res.status}).`);
+  }
+  return {
+    ok: true,
+    provider: body.provider ?? '',
+    model: body.model ?? '',
+    requiresToken: Boolean(body.requiresToken),
+  };
 }

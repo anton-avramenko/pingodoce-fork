@@ -2,9 +2,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 import {
-  activeApiKey,
-  AI_PROVIDER_LABEL,
   extractCodes,
+  isAiConfigured,
+  missingConfigHint,
   ScanError,
   type AiSettings,
   type ScanCandidate,
@@ -60,7 +60,7 @@ export default function CodeScanner({
   const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const previewUrl = useRef<string | null>(null);
-  const hasKey = Boolean(activeApiKey(ai));
+  const hasKey = isAiConfigured(ai);
 
   // Release the preview object URL when the sheet closes
   useEffect(() => {
@@ -156,11 +156,10 @@ export default function CodeScanner({
 
               {!hasKey ? (
                 <div className="mt-4 rounded-2xl bg-brand-tint p-4">
-                  <p className="text-sm font-semibold text-brand-dark">Chave API em falta</p>
-                  <p className="mt-1 text-[13px] text-ink-soft">
-                    O reconhecimento usa {AI_PROVIDER_LABEL[ai.provider]}. Introduza a chave
-                    na secção “Reconhecimento por IA” do ecrã de configuração.
+                  <p className="text-sm font-semibold text-brand-dark">
+                    {ai.provider === 'server' ? 'Servidor não configurado' : 'Chave API em falta'}
                   </p>
+                  <p className="mt-1 text-[13px] text-ink-soft">{missingConfigHint(ai)}</p>
                   {onOpenSettings && (
                     <button
                       type="button"

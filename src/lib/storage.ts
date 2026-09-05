@@ -19,6 +19,8 @@ export function defaultConfig(): AppConfig {
     aiApiKey: '',
     googleApiKey: '',
     googleModel: '',
+    serverUrl: '',
+    serverToken: '',
     coupons: [
       {
         id: 'demo-fuel',
