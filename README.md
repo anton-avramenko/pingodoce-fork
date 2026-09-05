@@ -131,7 +131,7 @@ one under **Reconhecimento por IA → Serviço** in the setup screen:
 |---|---|---|---|
 | Anthropic (Claude) | `claude-opus-5` (vision + structured outputs) | <https://platform.claude.com/> | `api.anthropic.com` |
 | Google AI Studio (Gemini) | `gemini-2.5-flash` by default, editable | <https://aistudio.google.com/> → *Get API key* | `generativelanguage.googleapis.com` |
-| Servidor (proxy) | whichever the proxy is configured with | none on the phone | your proxy URL (e.g. ngrok) |
+| Servidor (proxy) — **default** | whichever the proxy is configured with | none on the phone | the predefined proxy (`DEFAULT_SERVER_URL` in `src/lib/scan.ts`, an ngrok static domain) or your own URL |
 
 1. Create a **dedicated key with a spend limit** for UAT and revoke it
    afterwards.
@@ -173,9 +173,20 @@ GOOGLE_API_KEY=AIza… PROXY_TOKEN=some-secret npm run server
 $env:GOOGLE_API_KEY = "AIza…"; $env:PROXY_TOKEN = "some-secret"; npm run server
 ```
 
-Then on the phone: setup → *Reconhecimento por IA* → **Serviço: Servidor**,
-paste the `https://….ngrok-free.app` URL, the same token, tap **Testar
-ligação** (it calls `GET /health`) and **Guardar**.
+On the phone nothing needs to be typed: **Serviço: Servidor** is the default
+and the address field, left empty, points at the predefined proxy
+(`DEFAULT_SERVER_URL`). Tap **Testar ligação** (it calls `GET /health`) to
+confirm the laptop is up. Testers running their own proxy paste their URL
+(and token, if they set one) instead.
+
+**Who may use the key.** `/scan` only answers browsers whose `Origin` is on
+the allow-list (`ALLOWED_ORIGINS`, default: the GitHub Pages site plus
+localhost dev servers); other origins get `403 origin_not_allowed` and no
+CORS headers, so a third-party page cannot spend the key from a visitor's
+browser. This is a browser-side guard only — a script can fake `Origin` — so
+set `PROXY_TOKEN` as well whenever that matters. `GET /health` is answered
+for anyone (it costs nothing) and reports `allowedOrigins`, which the setup
+screen uses to warn when the current site isn't on the list.
 
 Environment variables:
 
@@ -184,13 +195,13 @@ Environment variables:
 | `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` | one of them is required; picks the provider |
 | `AI_PROVIDER` | `anthropic` or `google`, only needed when both keys are set |
 | `GOOGLE_MODEL` | Gemini model name (default `gemini-2.5-flash`) |
-| `PROXY_TOKEN` | optional shared secret; without it anyone who learns the ngrok URL can spend your key |
+| `ALLOWED_ORIGINS` | comma-separated browser origins allowed to call `/scan` (default: `https://anton-avramenko.github.io,http://localhost:3000,http://127.0.0.1:3000`; `*` = any) |
+| `PROXY_TOKEN` | optional shared secret on top of the origin check |
 | `PORT` | listen port (default `8787`) |
 
 Endpoints: `GET /health` → `{ ok, provider, model, requiresToken }`;
 `POST /scan` with `{ image: <base64>, mediaType, purpose }` → the extraction
-JSON, or `{ error: { code, detail } }` with a matching status. CORS allows any
-origin (the ngrok hostname changes on every restart); the app sends
+JSON, or `{ error: { code, detail } }` with a matching status. The app sends
 `ngrok-skip-browser-warning` so ngrok's free-tier interstitial doesn't get in
 the way.
 

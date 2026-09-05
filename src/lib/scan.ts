@@ -29,6 +29,13 @@ export { DEFAULT_GOOGLE_MODEL };
 /** Longest edge sent to the model — larger images cost more without reading better. */
 const MAX_IMAGE_EDGE = 1568;
 
+/**
+ * Proxy used when the tester leaves the server address empty: the POC
+ * author's laptop exposed through a static ngrok domain. Testers with their
+ * own proxy override it in setup.
+ */
+export const DEFAULT_SERVER_URL = 'https://oralee-dieretic-contemplatively.ngrok-free.dev';
+
 export type ScanPurpose = 'coupon' | 'card';
 
 /** Everything the scanner needs to know about the configured AI provider. */
@@ -37,8 +44,10 @@ export interface AiSettings {
   anthropicApiKey: string;
   googleApiKey: string;
   googleModel: string;
-  /** Base URL of the proxy, e.g. https://xxxx.ngrok-free.app (no trailing slash). */
+  /** Base URL of the proxy (no trailing slash). Falls back to DEFAULT_SERVER_URL. */
   serverUrl: string;
+  /** True when serverUrl came from DEFAULT_SERVER_URL rather than the tester. */
+  serverIsDefault: boolean;
   /** Optional shared secret sent as a Bearer token to the proxy. */
   serverToken: string;
 }
@@ -51,12 +60,14 @@ export const AI_PROVIDER_LABEL: Record<AiProvider, string> = {
 
 /** Pull the AI settings out of the persisted config. */
 export function resolveAiSettings(config: AppConfig): AiSettings {
+  const ownServer = normaliseServerUrl(config.serverUrl ?? '');
   return {
-    provider: config.aiProvider ?? 'anthropic',
+    provider: config.aiProvider ?? 'server',
     anthropicApiKey: (config.aiApiKey ?? '').trim(),
     googleApiKey: (config.googleApiKey ?? '').trim(),
     googleModel: (config.googleModel ?? '').trim() || DEFAULT_GOOGLE_MODEL,
-    serverUrl: normaliseServerUrl(config.serverUrl ?? ''),
+    serverUrl: ownServer || DEFAULT_SERVER_URL,
+    serverIsDefault: !ownServer,
     serverToken: (config.serverToken ?? '').trim(),
   };
 }
@@ -302,6 +313,7 @@ export interface ProxyHealth {
   provider: string;
   model: string;
   requiresToken: boolean;
+  allowedOrigins: string[];
 }
 
 /** Headers every proxy request carries (auth + ngrok's interstitial bypass). */
@@ -336,6 +348,12 @@ async function callProxy(
 
   if (res.status === 401) {
     throw new ScanError('O servidor rejeitou o token. Verifique-o no ecrã de configuração.', false);
+  }
+  if (res.status === 403) {
+    throw new ScanError(
+      'O servidor não aceita pedidos deste site (origem não autorizada). Ajuste ALLOWED_ORIGINS no servidor.',
+      false
+    );
   }
 
   let payload: RawExtraction & ProxyErrorBody;
@@ -385,5 +403,6 @@ export async function checkProxy(ai: AiSettings): Promise<ProxyHealth> {
     provider: body.provider ?? '',
     model: body.model ?? '',
     requiresToken: Boolean(body.requiresToken),
+    allowedOrigins: Array.isArray(body.allowedOrigins) ? body.allowedOrigins : [],
   };
 }

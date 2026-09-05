@@ -7,6 +7,7 @@ import {
   AI_PROVIDER_LABEL,
   checkProxy,
   DEFAULT_GOOGLE_MODEL,
+  DEFAULT_SERVER_URL,
   normaliseServerUrl,
   resolveAiSettings,
   ScanError,
@@ -69,10 +70,22 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
     setProxyCheck({ state: 'busy' });
     try {
       const health = await checkProxy(ai);
-      setProxyCheck({
-        state: 'ok',
-        text: `Ligado · ${health.provider} (${health.model})${health.requiresToken ? ' · token aceite' : ''}`,
-      });
+      const here = typeof window !== 'undefined' ? window.location.origin : '';
+      const originOk =
+        health.allowedOrigins.length === 0 ||
+        health.allowedOrigins.includes('*') ||
+        health.allowedOrigins.includes(here);
+      setProxyCheck(
+        originOk
+          ? {
+              state: 'ok',
+              text: `Ligado · ${health.provider} (${health.model})${health.requiresToken ? ' · token aceite' : ''}`,
+            }
+          : {
+              state: 'error',
+              text: `O servidor responde, mas não autoriza este site (${here}). Adicione-o a ALLOWED_ORIGINS no servidor.`,
+            }
+      );
     } catch (error) {
       setProxyCheck({
         state: 'error',
@@ -403,11 +416,12 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
                     setProxyCheck({ state: 'idle' });
                   }}
                   onBlur={(e) => patch({ serverUrl: normaliseServerUrl(e.target.value) })}
-                  placeholder="https://xxxx.ngrok-free.app"
+                  placeholder={DEFAULT_SERVER_URL}
                 />
                 <p className="mt-1.5 text-[11px] text-ink-faint">
-                  URL público do proxy (pasta <code>server/</code> deste repositório) — por exemplo o
-                  endereço que o ngrok mostra. A chave API fica nesse servidor, não no telemóvel.
+                  {ai.serverIsDefault
+                    ? 'Vazio = servidor predefinido do POC (acima). Só precisa de alterar se correr o seu próprio proxy (pasta server/ deste repositório).'
+                    : 'URL público do seu proxy (pasta server/ deste repositório), por exemplo o endereço que o ngrok mostra. Apague para voltar ao servidor predefinido.'}
                 </p>
               </div>
               <div className="mt-3">
@@ -423,7 +437,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
                     patch({ serverToken: e.target.value.trim() });
                     setProxyCheck({ state: 'idle' });
                   }}
-                  placeholder="O mesmo valor que PROXY_TOKEN no servidor"
+                  placeholder="Só se o servidor tiver PROXY_TOKEN"
                 />
               </div>
               <div className="mt-3 flex items-center gap-3">
@@ -503,7 +517,7 @@ export default function SetupView({ config, onSave, onReset, onClose }: SetupVie
 
           <p className="mt-3 text-[11px] text-ink-faint">
             {ai.provider === 'server'
-              ? 'Sem chave no telemóvel: as fotos vão para o servidor indicado, que chama o serviço de IA com a chave dele. Proteja o servidor com um token se o endereço for público.'
+              ? 'Sem chave no telemóvel: as fotos vão para o servidor indicado, que chama o serviço de IA com a chave dele. O servidor só aceita pedidos vindos deste site; um token é opcional.'
               : 'As chaves ficam guardadas apenas neste dispositivo (localStorage) e são enviadas só para o serviço escolhido. Não as partilhe nem as coloque em repositórios públicos. Use chaves dedicadas com limite de gastos e revogue-as no fim dos testes.'}
           </p>
         </section>
